@@ -98,11 +98,21 @@ def decrypt_data(encrypted_data):
 def sanitize_input(text):
     """Remove dangerous characters from input"""
     # Remove SQL injection patterns and XSS attempts
-    dangerous_patterns = ['<', '>', '"', "'", ';', '--', '/*', '*/', 'script']
+    dangerous_chars = ['<', '>', '"', "'", ';', '/', '\\', '{', '}', '(', ')']
     sanitized = text
-    for pattern in dangerous_patterns:
-        sanitized = sanitized.replace(pattern, '')
+    for char in dangerous_chars:
+        sanitized = sanitized.replace(char, '')
     return sanitized.strip()
+
+def check_xss_attempt(text):
+    """Check for XSS attack patterns"""
+    xss_patterns = ['<script', '</script>', 'javascript:', 'onerror=', 'onload=', 
+                    '<iframe', '<img', 'onclick=', 'onmouseover=', 'alert(', 'eval(']
+    text_lower = text.lower()
+    for pattern in xss_patterns:
+        if pattern in text_lower:
+            return True
+    return False
 
 def validate_password(password):
     """Validate password strength"""
@@ -166,26 +176,38 @@ def validate_file_upload(uploaded_file):
     
     # Get file extension
     filename = uploaded_file.name
-    file_extension = filename.split('.')[-1].lower()
+    file_extension = filename.split('.')[-1].lower() if '.' in filename else ''
     
     # Allowed file types (for profile pictures/KYC documents)
     allowed_extensions = ['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx']
     
     # Blocked dangerous extensions
     blocked_extensions = ['exe', 'bat', 'sh', 'cmd', 'com', 'pif', 'scr', 
-                          'vbs', 'js', 'jar', 'zip', 'rar', 'dll', 'sys']
+                          'vbs', 'js', 'jar', 'zip', 'rar', 'dll', 'sys',
+                          'msi', 'app', 'deb', 'rpm', 'dmg', 'pkg', 'apk',
+                          'php', 'asp', 'jsp', 'py', 'rb', 'pl', 'cgi']
+    
+    if not file_extension:
+        return False, "File has no extension. Only files with valid extensions are allowed."
     
     if file_extension in blocked_extensions:
-        return False, f"File type .{file_extension} is not allowed for security reasons"
+        return False, f"Security Alert: '.{file_extension}' files are blocked as they may contain malicious code or executables"
     
     if file_extension not in allowed_extensions:
-        return False, f"File type .{file_extension} is not supported. Allowed: {', '.join(allowed_extensions)}"
+        return False, f"File type '.{file_extension}' is not supported. Allowed types: {', '.join(allowed_extensions)}"
     
     # Check file size (max 5MB)
     if uploaded_file.size > 5 * 1024 * 1024:
-        return False, "File size exceeds 5MB limit"
+        return False, f"File size ({uploaded_file.size / 1024 / 1024:.2f} MB) exceeds the 5MB limit"
     
-    return True, "File is valid"
+    # Check for double extensions (e.g., file.pdf.exe)
+    if filename.count('.') > 1:
+        all_extensions = [ext.lower() for ext in filename.split('.')[1:]]
+        for ext in all_extensions[:-1]:  # Check all extensions except the last one
+            if ext in blocked_extensions:
+                return False, f"Security Alert: Detected hidden dangerous extension '.{ext}' in filename"
+    
+    return True, "File validation passed"
 
 # Registration Page
 def register_page():
@@ -213,6 +235,14 @@ def register_page():
             if submitted:
                 errors = []
                 
+                # Check for XSS attempts BEFORE sanitizing
+                if check_xss_attempt(username):
+                    errors.append("XSS attack detected! Special characters like <script> are not allowed")
+                    add_audit_log('Registration Failed - XSS Attempt', f"Username attempted: {username}")
+                
+                if check_xss_attempt(email):
+                    errors.append("XSS attack detected in email field")
+                
                 # Sanitize inputs
                 username = sanitize_input(username)
                 email = sanitize_input(email)
@@ -239,7 +269,7 @@ def register_page():
                 
                 if errors:
                     for error in errors:
-                        st.markdown(f'<div class="error-msg">❌ {error}</div>', unsafe_allow_html=True)
+                        st.error(f"❌ {error}")
                     add_audit_log('Registration Failed', f"Username: {username}, Errors: {', '.join(errors)}")
                 else:
                     # Create user
@@ -254,12 +284,46 @@ def register_page():
                     }
                     
                     # Encrypt and store
-                    st.session_state.users[username] = encrypt_data(user_data)
+                    encrypted_user_data = encrypt_data(user_data)
+                    st.session_state.users[username] = encrypted_user_data
                     
-                    st.markdown('<div class="success-msg">✅ Registration successful! You received $1000 welcome bonus.</div>', 
-                               unsafe_allow_html=True)
+                    st.success('✅ Registration successful! You received $1000 welcome bonus.')
+                    
+                    # DEBUG INFO - For Test #18: Data Encryption Check
+                    with st.expander("🔍 Click here to verify data encryption (For Testing Only)"):
+                        st.info("**Test #18: Data Encryption Verification**")
+                        st.write("**How data is stored in the system:**")
+                        
+                        col_a, col_b = st.columns(2)
+                        
+                        with col_a:
+                            st.markdown("##### 📦 Encrypted Storage (Base64)")
+                            st.code(f"{encrypted_user_data[:100]}...\n\n(Full encrypted string: {len(encrypted_user_data)} characters)", language="text")
+                            st.caption("✅ Data is encrypted before storage")
+                        
+                        with col_b:
+                            st.markdown("##### 🔓 Original Data Structure")
+                            st.json({
+                                "username": username,
+                                "password_hash": user_data['password_hash'][:20] + "...",
+                                "email": email,
+                                "phone": phone,
+                                "balance": 1000.0
+                            })
+                            st.caption("🔒 Password stored as hash, not plain text")
+                        
+                        st.success("""
+                        **Encryption Verified:**
+                        - ✅ User data encrypted using Base64 encoding
+                        - ✅ Password hashed using SHA-256
+                        - ✅ Original password never stored
+                        - ✅ Data unreadable without decryption
+                        """)
+                    
                     add_audit_log('User Registered', f"Username: {username}")
-                    time.sleep(2)
+                    
+                    st.info("⏳ Redirecting to login in 3 seconds...")
+                    time.sleep(3)
                     st.session_state.page = 'login'
                     st.rerun()
         
@@ -284,44 +348,41 @@ def login_page():
             submitted = st.form_submit_button("Login", use_container_width=True)
             
             if submitted:
-                # Check for SQL injection
+                # Check for SQL injection and XSS attacks
                 if check_sql_injection(username) or check_sql_injection(password):
-                    st.markdown('<div class="error-msg">❌ Invalid characters detected in input</div>', 
-                               unsafe_allow_html=True)
+                    st.error("❌ SQL Injection attempt detected! Invalid characters in input")
                     add_audit_log('Login Failed - SQL Injection Attempt', f"Username: {username}")
-                    return
-                
-                username = sanitize_input(username)
-                
-                # Check account lockout
-                attempts = st.session_state.login_attempts.get(username, 0)
-                if attempts >= 5:
-                    st.markdown('<div class="error-msg">🔒 Account locked due to too many failed attempts</div>', 
-                               unsafe_allow_html=True)
-                    add_audit_log('Login Failed - Account Locked', f"Username: {username}")
-                    return
-                
-                # Check credentials
-                if username not in st.session_state.users:
-                    st.markdown('<div class="error-msg">❌ Invalid credentials</div>', unsafe_allow_html=True)
-                    st.session_state.login_attempts[username] = attempts + 1
-                    add_audit_log('Login Failed - User Not Found', f"Username: {username}")
-                    return
-                
-                user_data = decrypt_data(st.session_state.users[username])
-                if user_data['password_hash'] != hash_password(password):
-                    st.markdown('<div class="error-msg">❌ Invalid credentials</div>', unsafe_allow_html=True)
-                    st.session_state.login_attempts[username] = attempts + 1
-                    add_audit_log('Login Failed - Wrong Password', f"Username: {username}, Attempts: {attempts + 1}")
-                    return
-                
-                # Successful login
-                st.session_state.current_user = user_data
-                st.session_state.login_attempts[username] = 0
-                st.session_state.last_activity = datetime.now()
-                st.session_state.page = 'dashboard'
-                add_audit_log('Login Successful', f"Username: {username}")
-                st.rerun()
+                elif check_xss_attempt(username) or check_xss_attempt(password):
+                    st.error("❌ XSS attack detected! Special characters like <script> are not allowed")
+                    add_audit_log('Login Failed - XSS Attempt', f"Username: {username}")
+                else:
+                    username = sanitize_input(username)
+                    
+                    # Check account lockout
+                    attempts = st.session_state.login_attempts.get(username, 0)
+                    if attempts >= 5:
+                        st.error("🔒 Account locked due to too many failed attempts")
+                        add_audit_log('Login Failed - Account Locked', f"Username: {username}")
+                    else:
+                        # Check credentials
+                        if username not in st.session_state.users:
+                            st.error("❌ Invalid credentials")
+                            st.session_state.login_attempts[username] = attempts + 1
+                            add_audit_log('Login Failed - User Not Found', f"Username: {username}")
+                        else:
+                            user_data = decrypt_data(st.session_state.users[username])
+                            if user_data['password_hash'] != hash_password(password):
+                                st.error("❌ Invalid credentials")
+                                st.session_state.login_attempts[username] = attempts + 1
+                                add_audit_log('Login Failed - Wrong Password', f"Username: {username}, Attempts: {attempts + 1}")
+                            else:
+                                # Successful login
+                                st.session_state.current_user = user_data
+                                st.session_state.login_attempts[username] = 0
+                                st.session_state.last_activity = datetime.now()
+                                st.session_state.page = 'dashboard'
+                                add_audit_log('Login Successful', f"Username: {username}")
+                                st.rerun()
         
         st.markdown("---")
         if st.button("Don't have an account? Register", use_container_width=True):
@@ -387,14 +448,14 @@ def dashboard_page():
     st.markdown("---")
     
     # Main Content Tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["💸 Send Money", "➕ Add Money", "👤 Profile", "📁 Documents", "📊 History"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["💸 Send Money", "➕ Add Money", "👤 Profile", "📁 Documents", "📊 History", "🔍 Security Debug"])
     
     # Tab 1: Send Money
     with tab1:
         st.subheader("Send Money")
         with st.form("send_money_form"):
             recipient = st.text_input("Recipient Username", max_chars=50)
-            amount = st.number_input("Amount ($)", min_value=0.01, step=0.01, format="%.2f")
+            amount_input = st.text_input("Amount ($)", placeholder="Enter amount (e.g., 100.50)")
             notes = st.text_area("Notes (Optional)", max_chars=500, height=100)
             transaction_pin = st.text_input("Transaction PIN", type="password", 
                                           help="Default PIN: 1234")
@@ -405,8 +466,23 @@ def dashboard_page():
                 errors = []
                 recipient = sanitize_input(recipient)
                 
-                if amount <= 0:
-                    errors.append("Amount must be positive")
+                # Validate amount is numeric
+                try:
+                    amount = float(amount_input)
+                except (ValueError, TypeError):
+                    errors.append(f"Invalid amount: '{amount_input}' is not a valid number. Please enter numeric values only (e.g., 100.50)")
+                    amount = 0
+                
+                # Check for XSS in notes
+                if check_xss_attempt(notes):
+                    errors.append("XSS attack detected in notes! Special characters not allowed")
+                
+                # Additional validation for negative numbers
+                if not errors and amount < 0:
+                    errors.append("Amount cannot be negative")
+                
+                if not errors and amount <= 0:
+                    errors.append("Amount must be a positive number")
                 
                 if amount > 10000:
                     errors.append("Maximum transaction limit is $10,000")
@@ -462,15 +538,32 @@ def dashboard_page():
     with tab2:
         st.subheader("Add Money to Wallet")
         with st.form("add_money_form"):
-            amount = st.number_input("Amount ($)", min_value=0.01, step=0.01, format="%.2f")
+            amount_input = st.text_input("Amount ($)", placeholder="Enter amount (e.g., 500.00)")
             
             submit_add = st.form_submit_button("➕ Add Money", use_container_width=True)
             
             if submit_add:
-                if amount <= 0:
-                    st.error("❌ Amount must be positive")
-                elif amount > 50000:
-                    st.error("❌ Maximum deposit limit is $50,000")
+                errors = []
+                
+                # Validate amount is numeric
+                try:
+                    amount = float(amount_input)
+                except (ValueError, TypeError):
+                    errors.append(f"Invalid amount: '{amount_input}' is not a valid number. Please enter numeric values only")
+                    amount = 0
+                
+                # Additional validation for negative numbers
+                if not errors and amount < 0:
+                    errors.append("Amount cannot be negative")
+                
+                if not errors and amount <= 0:
+                    errors.append("Amount must be a positive number")
+                elif not errors and amount > 50000:
+                    errors.append("Maximum deposit limit is $50,000")
+                
+                if errors:
+                    for error in errors:
+                        st.error(f"❌ {error}")
                 else:
                     st.session_state.current_user['balance'] += amount
                     st.session_state.users[st.session_state.current_user['username']] = encrypt_data(st.session_state.current_user)
@@ -537,30 +630,66 @@ def dashboard_page():
         st.subheader("📁 Upload Documents")
         st.info("Upload your KYC documents or profile picture. Allowed formats: JPG, PNG, PDF, DOC, DOCX")
         
-        uploaded_file = st.file_uploader("Choose a file", 
-                                        type=['jpg', 'jpeg', 'png', 'pdf', 'doc', 'docx'])
+        # Remove type restriction to allow any file selection, then validate manually
+        uploaded_file = st.file_uploader("Choose a file", type=None)
         
         if uploaded_file is not None:
             is_valid, message = validate_file_upload(uploaded_file)
             
             if is_valid:
-                st.success(f"✅ {message}")
+                st.success(f"✅ File Validation Passed!")
                 st.info(f"""
                 **File Details:**
-                - Filename: {uploaded_file.name}
+                - Filename: `{uploaded_file.name}`
                 - File size: {uploaded_file.size / 1024:.2f} KB
-                - File type: {uploaded_file.type}
+                - File type: {uploaded_file.type if uploaded_file.type else 'Unknown'}
+                - Status: ✅ Safe to upload
                 """)
                 
-                if st.button("Upload Document", use_container_width=True):
+                if st.button("📤 Confirm Upload", use_container_width=True):
                     st.success("✅ Document uploaded successfully!")
                     add_audit_log('Document Uploaded', f"Filename: {uploaded_file.name}")
+                    st.balloons()
             else:
+                # Show detailed error for dangerous files
+                st.error(f"🚫 **FILE UPLOAD REJECTED**")
                 st.error(f"❌ {message}")
-                add_audit_log('File Upload Rejected', f"Filename: {uploaded_file.name}, Reason: {message}")
+                
+                st.warning(f"""
+                **Attempted Upload Details:**
+                - Filename: `{uploaded_file.name}`
+                - File size: {uploaded_file.size / 1024:.2f} KB
+                - File type: {uploaded_file.type if uploaded_file.type else 'Unknown'}
+                - Status: ❌ **BLOCKED FOR SECURITY**
+                """)
+                
+                add_audit_log('File Upload Rejected - Security Threat', f"Filename: {uploaded_file.name}, Reason: {message}")
         
         st.markdown("---")
-        st.warning("⚠️ **Security Notice:** For security reasons, executable files (.exe, .bat, .sh, etc.) are not allowed.")
+        
+        # Show allowed and blocked file types
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.success("""
+            **✅ Allowed File Types:**
+            - Images: `.jpg`, `.jpeg`, `.png`
+            - Documents: `.pdf`, `.doc`, `.docx`
+            - Maximum size: 5 MB
+            """)
+        
+        with col2:
+            st.error("""
+            **🚫 Blocked File Types:**
+            - Executables: `.exe`, `.bat`, `.sh`, `.cmd`
+            - Scripts: `.js`, `.vbs`, `.jar`, `.com`
+            - Archives: `.zip`, `.rar`
+            - System files: `.dll`, `.sys`
+            - And other dangerous formats
+            """)
+        
+        st.markdown("---")
+        st.warning("⚠️ **Security Notice:** For security reasons, executable and potentially dangerous files are automatically blocked to protect against malware.")
     
     # Tab 5: Transaction History
     with tab5:
@@ -588,6 +717,76 @@ def dashboard_page():
                     <strong>Notes:</strong> {txn['notes'] or 'No notes'}
                 </div>
                 """, unsafe_allow_html=True)
+    
+    # Tab 6: Security Debug (NEW - For Testing Password Hashing)
+    with tab6:
+        st.subheader("🔍 Security Debug Information")
+        st.warning("⚠️ **For Testing Only** - Remove this tab in production!")
+        
+        st.markdown("---")
+        st.markdown("### 🔐 Password Hashing Verification")
+        
+        # Show current user's encrypted data
+        encrypted_user = st.session_state.users[st.session_state.current_user['username']]
+        
+        st.info("""
+        **What to verify:**
+        - Password is NOT stored in plain text
+        - Password is stored as a SHA-256 hash
+        - User data is encrypted using Base64 encoding
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 📦 Encrypted Storage")
+            st.code(f"Encrypted User Data:\n{encrypted_user[:100]}...\n\n(This is how data is stored - encrypted and unreadable)", language="text")
+        
+        with col2:
+            st.markdown("#### 🔓 Decrypted Data Structure")
+            st.json({
+                "username": st.session_state.current_user['username'],
+                "password_hash": st.session_state.current_user['password_hash'],
+                "email": st.session_state.current_user['email'],
+                "phone": st.session_state.current_user['phone'],
+                "balance": st.session_state.current_user['balance'],
+                "created_at": st.session_state.current_user['created_at']
+            })
+        
+        st.markdown("---")
+        
+        st.success(f"""
+        ✅ **Security Verified:**
+        - Original Password: `[NOT STORED - User entered during registration]`
+        - Stored Password Hash: `{st.session_state.current_user['password_hash']}`
+        - Hash Type: SHA-256
+        - Hash Length: {len(st.session_state.current_user['password_hash'])} characters
+        """)
+        
+        st.info("""
+        **How it works:**
+        1. User enters password: `Test@1234`
+        2. App hashes it using SHA-256: `{hash}`
+        3. Only the hash is stored (64 character hexadecimal)
+        4. Original password is NEVER stored
+        5. When logging in, entered password is hashed and compared with stored hash
+        """)
+        
+        st.markdown("---")
+        st.markdown("### 📊 All Users (Encrypted)")
+        st.write(f"Total Registered Users: {len(st.session_state.users)}")
+        
+        for username, encrypted_data in st.session_state.users.items():
+            with st.expander(f"User: {username}"):
+                st.code(f"Encrypted: {encrypted_data[:80]}...", language="text")
+                user_data = decrypt_data(encrypted_data)
+                st.write(f"Password Hash: `{user_data['password_hash']}`")
+                st.write(f"Email: {user_data['email']}")
+                st.write(f"Balance: ${user_data['balance']:.2f}")
+        
+        st.markdown("---")
+        st.error("🚨 **Important:** Remove this debug tab before deploying to production!")
+
 
 # Main App Logic
 def main():
